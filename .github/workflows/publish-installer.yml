@@ -1,0 +1,58 @@
+name: Publish DPage Installer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - release-source.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release repository
+        uses: actions/checkout@v4
+
+      - name: Download installer artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_URL="$(sed -n '1p' release-source.txt | tr -d '\r')"
+          RELEASE_TAG="$(sed -n '2p' release-source.txt | tr -d '\r')"
+          if [ -z "$SOURCE_URL" ] || [ -z "$RELEASE_TAG" ]; then
+            echo "release-source.txt must contain the source URL on line 1 and tag on line 2."
+            exit 1
+          fi
+          curl -L --fail --retry 3 --retry-delay 2 "$SOURCE_URL" -o dpage-artifact.zip
+          mkdir -p extracted
+          unzip -q dpage-artifact.zip -d extracted
+
+          INSTALLER="$(find extracted -type f -iname '*.exe' | head -n 1)"
+          if [ -z "$INSTALLER" ]; then
+            echo "No installer .exe found in the artifact."
+            find extracted -maxdepth 3 -type f -print
+            exit 1
+          fi
+
+          cp "$INSTALLER" DPage-Setup.exe
+          sha256sum DPage-Setup.exe > DPage-Setup.exe.sha256.txt
+
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" DPage-Setup.exe DPage-Setup.exe.sha256.txt --clobber
+          else
+            gh release create "$RELEASE_TAG" DPage-Setup.exe DPage-Setup.exe.sha256.txt \
+              --title "DPage by DTools — $RELEASE_TAG" \
+              --notes "Instalador oficial do DPage by DTools para Windows. Inclui arquivo SHA-256 para verificação de integridade."
+          fi
