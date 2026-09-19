@@ -33,3 +33,16 @@ Não publicar um novo instalador apenas porque compilou. Antes da release públi
 5. o teste manual do DPage deve ser concluído.
 
 © DTools
+
+
+## Sincronização automática do instalador
+
+O repositório público verifica automaticamente o último build **SUCCESS** do workflow oficial do `PLOTAPP` na branch `main`. A cada 10 minutos ele:
+
+1. encontra o último build aprovado;
+2. baixa o artifact privado usando `PLOTAPP_READ_TOKEN`;
+3. valida o SHA-256 produzido pelo próprio build;
+4. compara com o SHA-256 atualmente publicado;
+5. publica somente quando o arquivo mudou.
+
+O site usa `releases/latest/download/DPage-Setup.exe`, portanto não precisa trocar de URL a cada build.

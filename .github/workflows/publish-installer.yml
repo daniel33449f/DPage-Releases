@@ -8,19 +8,23 @@ on:
         required: true
         default: "v1.1-rc5"
       plotapp_run_id:
-        description: "Run ID do workflow privado PLOTAPP (preferencial)"
-        required: false
-      source_url:
-        description: "URL temporária alternativa do ZIP do artifact (fallback)"
+        description: "Run ID específico do PLOTAPP (opcional)"
         required: false
       expected_head_sha:
-        description: "SHA esperado do commit PLOTAPP aprovado (opcional, mas recomendado)"
+        description: "SHA esperado do commit PLOTAPP (opcional)"
         required: false
       publish_release:
-        description: "Publicar/atualizar a release pública após validar tudo"
+        description: "Publicar após validar"
         required: true
-        default: false
+        default: true
         type: boolean
+  schedule:
+    # Sincroniza automaticamente com o último build verde do PLOTAPP.
+    - cron: "*/10 * * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-installer.yml"
 
 permissions:
   contents: write
@@ -32,11 +36,11 @@ jobs:
       - name: Checkout release repository
         uses: actions/checkout@v4
 
-      - name: Resolve and download approved installer artifact
+      - name: Resolve latest approved PLOTAPP installer
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
-          PLOTAPP_RUN_ID: ${{ inputs.plotapp_run_id }}
-          SOURCE_URL: ${{ inputs.source_url }}
+          PLOTAPP_RUN_ID_INPUT: ${{ inputs.plotapp_run_id }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           PLOTAPP_READ_TOKEN: ${{ secrets.PLOTAPP_READ_TOKEN }}
         shell: bash
@@ -49,63 +53,56 @@ jobs:
             exit 1
           fi
 
+          test -n "${PLOTAPP_READ_TOKEN:-}" || {
+            echo "PLOTAPP_READ_TOKEN is required for automatic publishing."
+            exit 1
+          }
+          export GH_TOKEN="$PLOTAPP_READ_TOKEN"
+
           VERSION="${RELEASE_TAG#v}"
           ARTIFACT_NAME="DPage-Setup-$VERSION"
           INSTALLER_NAME="$ARTIFACT_NAME.exe"
           HASH_NAME="$ARTIFACT_NAME.sha256.txt"
           mkdir -p extracted
 
-          if [ -n "${PLOTAPP_RUN_ID:-}" ] && [ -n "${PLOTAPP_READ_TOKEN:-}" ]; then
-            echo "Validating private PLOTAPP workflow run: $PLOTAPP_RUN_ID"
-            export GH_TOKEN="$PLOTAPP_READ_TOKEN"
+          PLOTAPP_RUN_ID="${PLOTAPP_RUN_ID_INPUT:-}"
+          if [ -z "$PLOTAPP_RUN_ID" ]; then
+            echo "Resolving latest successful PLOTAPP main build..."
+            RUN_LIST="$(gh api "repos/daniel33449f/PLOTAPP/actions/workflows/build-dplot-rc2.yml/runs?branch=main&status=success&per_page=1")"
+            PLOTAPP_RUN_ID="$(jq -r '.workflow_runs[0].id // empty' <<<"$RUN_LIST")"
+          fi
+          test -n "$PLOTAPP_RUN_ID" || { echo "No successful PLOTAPP build found."; exit 1; }
 
-            RUN_JSON="$(gh api "repos/daniel33449f/PLOTAPP/actions/runs/$PLOTAPP_RUN_ID")"
-            RUN_STATUS="$(jq -r '.status' <<<"$RUN_JSON")"
-            RUN_CONCLUSION="$(jq -r '.conclusion' <<<"$RUN_JSON")"
-            RUN_NAME="$(jq -r '.name' <<<"$RUN_JSON")"
-            RUN_BRANCH="$(jq -r '.head_branch' <<<"$RUN_JSON")"
-            RUN_SHA="$(jq -r '.head_sha' <<<"$RUN_JSON")"
+          RUN_JSON="$(gh api "repos/daniel33449f/PLOTAPP/actions/runs/$PLOTAPP_RUN_ID")"
+          RUN_STATUS="$(jq -r '.status' <<<"$RUN_JSON")"
+          RUN_CONCLUSION="$(jq -r '.conclusion' <<<"$RUN_JSON")"
+          RUN_NAME="$(jq -r '.name' <<<"$RUN_JSON")"
+          RUN_BRANCH="$(jq -r '.head_branch' <<<"$RUN_JSON")"
+          RUN_SHA="$(jq -r '.head_sha' <<<"$RUN_JSON")"
 
-            test "$RUN_STATUS" = "completed" || { echo "PLOTAPP run is not completed."; exit 1; }
-            test "$RUN_CONCLUSION" = "success" || { echo "PLOTAPP run did not succeed."; exit 1; }
-            test "$RUN_NAME" = "Build DPage RC5 Windows Installer" || { echo "Unexpected PLOTAPP workflow: $RUN_NAME"; exit 1; }
-            test "$RUN_BRANCH" = "main" || { echo "Only PLOTAPP main builds may be published."; exit 1; }
+          test "$RUN_STATUS" = "completed" || { echo "PLOTAPP run is not completed."; exit 1; }
+          test "$RUN_CONCLUSION" = "success" || { echo "PLOTAPP run did not succeed."; exit 1; }
+          test "$RUN_NAME" = "Build DPage RC5 Windows Installer" || { echo "Unexpected workflow: $RUN_NAME"; exit 1; }
+          test "$RUN_BRANCH" = "main" || { echo "Only main builds may be published."; exit 1; }
 
-            if [ -n "${EXPECTED_HEAD_SHA:-}" ] && [ "$RUN_SHA" != "$EXPECTED_HEAD_SHA" ]; then
-              echo "PLOTAPP run SHA does not match expected_head_sha."
-              echo "Expected: $EXPECTED_HEAD_SHA"
-              echo "Actual:   $RUN_SHA"
-              exit 1
-            fi
-
-            echo "Approved PLOTAPP commit: $RUN_SHA"
-            gh run download "$PLOTAPP_RUN_ID" \
-              -R daniel33449f/PLOTAPP \
-              -n "$ARTIFACT_NAME" \
-              -D extracted
-
-          elif [ -n "${SOURCE_URL:-}" ]; then
-            echo "Using one-time fallback artifact URL supplied to this run."
-            curl -L --fail --retry 3 --retry-delay 2 "$SOURCE_URL" -o dpage-artifact.zip
-            unzip -q dpage-artifact.zip -d extracted
-            RUN_SHA="fallback-url"
-          else
-            echo "No artifact source available."
-            echo "Preferred: set PLOTAPP_READ_TOKEN and provide plotapp_run_id."
-            echo "Fallback: provide source_url only when dispatching this workflow."
+          if [ -n "${EXPECTED_HEAD_SHA:-}" ] && [ "$RUN_SHA" != "$EXPECTED_HEAD_SHA" ]; then
+            echo "PLOTAPP SHA mismatch. Expected $EXPECTED_HEAD_SHA, got $RUN_SHA"
             exit 1
           fi
 
+          echo "Approved PLOTAPP run: $PLOTAPP_RUN_ID"
+          echo "Approved PLOTAPP commit: $RUN_SHA"
+          gh run download "$PLOTAPP_RUN_ID"             -R daniel33449f/PLOTAPP             -n "$ARTIFACT_NAME"             -D extracted
+
           INSTALLER="$(find extracted -type f -name "$INSTALLER_NAME" | head -n 1)"
           SOURCE_HASH="$(find extracted -type f -name "$HASH_NAME" | head -n 1)"
-
-          test -n "$INSTALLER" || { echo "Expected installer not found: $INSTALLER_NAME"; find extracted -maxdepth 5 -type f -print; exit 1; }
-          test -n "$SOURCE_HASH" || { echo "Source SHA-256 file not found: $HASH_NAME"; find extracted -maxdepth 5 -type f -print; exit 1; }
+          test -n "$INSTALLER" || { echo "Installer not found: $INSTALLER_NAME"; exit 1; }
+          test -n "$SOURCE_HASH" || { echo "SHA file not found: $HASH_NAME"; exit 1; }
 
           EXPECTED_HASH="$(tr -d '[:space:]' < "$SOURCE_HASH" | tr '[:lower:]' '[:upper:]')"
           ACTUAL_HASH="$(sha256sum "$INSTALLER" | awk '{print toupper($1)}')"
           test "$EXPECTED_HASH" = "$ACTUAL_HASH" || {
-            echo "Source installer SHA-256 mismatch."
+            echo "Installer SHA-256 mismatch."
             echo "Expected: $EXPECTED_HASH"
             echo "Actual:   $ACTUAL_HASH"
             exit 1
@@ -116,6 +113,7 @@ jobs:
 
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SOURCE_RUN_ID=$PLOTAPP_RUN_ID" >> "$GITHUB_ENV"
           echo "SOURCE_RUN_SHA=$RUN_SHA" >> "$GITHUB_ENV"
           echo "SOURCE_INSTALLER_SHA256=$ACTUAL_HASH" >> "$GITHUB_ENV"
 
@@ -128,25 +126,56 @@ jobs:
           sha256sum -c DPage-Setup.exe.sha256.txt
           echo "Installer bytes: $(stat -c%s DPage-Setup.exe)"
 
-      - name: Dry-run summary
-        if: ${{ inputs.publish_release == false }}
-        shell: bash
-        run: |
-          echo "DRY RUN PASSED"
-          echo "Release: $RELEASE_TAG"
-          echo "PLOTAPP commit: $SOURCE_RUN_SHA"
-          echo "Installer SHA-256: $SOURCE_INSTALLER_SHA256"
-          echo "No public release was changed."
-
-      - name: Publish GitHub Release
-        if: ${{ inputs.publish_release == true }}
+      - name: Compare with current public installer
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p current-release
+          CURRENT_HASH=""
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG"               -p "DPage-Setup.exe.sha256.txt"               -D current-release               --clobber >/dev/null 2>&1 || true
+            if [ -f current-release/DPage-Setup.exe.sha256.txt ]; then
+              CURRENT_HASH="$(awk '{print toupper($1)}' current-release/DPage-Setup.exe.sha256.txt)"
+            fi
+          fi
+          echo "CURRENT_PUBLIC_SHA256=$CURRENT_HASH" >> "$GITHUB_ENV"
+          if [ "$CURRENT_HASH" = "$SOURCE_INSTALLER_SHA256" ]; then
+            echo "RELEASE_CHANGED=false" >> "$GITHUB_ENV"
+            echo "Public installer is already current."
+          else
+            echo "RELEASE_CHANGED=true" >> "$GITHUB_ENV"
+            echo "New installer detected: $SOURCE_INSTALLER_SHA256"
+          fi
+
+      - name: Publish latest validated installer
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish_release == true) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_CHANGED" != "true" ]; then
+            echo "Nothing to publish."
+            exit 0
+          fi
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" DPage-Setup.exe DPage-Setup.exe.sha256.txt --clobber
           else
-            gh release create "$RELEASE_TAG" DPage-Setup.exe DPage-Setup.exe.sha256.txt               --title "DPage by DTools — $RELEASE_TAG"               --notes "Instalador oficial do DPage by DTools para Windows. Inclui arquivo SHA-256 para verificação de integridade."
+            gh release create "$RELEASE_TAG" DPage-Setup.exe DPage-Setup.exe.sha256.txt               --title "DPage by DTools — $RELEASE_TAG"               --notes "Instalador oficial do DPage by DTools para Windows. Publicação automática após build verde, validação de origem e SHA-256."
           fi
+
+          echo "Published PLOTAPP run $SOURCE_RUN_ID"
+          echo "Published PLOTAPP commit $SOURCE_RUN_SHA"
+          echo "Published installer SHA-256 $SOURCE_INSTALLER_SHA256"
+
+      - name: Manual validation-only summary
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == false }}
+        shell: bash
+        run: |
+          echo "VALIDATION PASSED — no public release change requested."
+          echo "PLOTAPP run: $SOURCE_RUN_ID"
+          echo "PLOTAPP commit: $SOURCE_RUN_SHA"
+          echo "Installer SHA-256: $SOURCE_INSTALLER_SHA256"
