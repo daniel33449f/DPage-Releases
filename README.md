@@ -34,15 +34,8 @@ Não publicar um novo instalador apenas porque compilou. Antes da release públi
 
 © DTools
 
+## Atualização do instalador
 
-## Sincronização automática do instalador
+Não há sincronização automática. A promoção para a release pública é sempre manual, usando um build verde da branch `main`, o `run_id` exato e o SHA-256 esperado. O workflow inicia em modo de validação e só altera a release quando `publish_release` é marcado explicitamente.
 
-O repositório público verifica automaticamente o último build **SUCCESS** do workflow oficial do `PLOTAPP` na branch `main`. A cada 10 minutos ele:
-
-1. encontra o último build aprovado;
-2. baixa o artifact privado usando `PLOTAPP_READ_TOKEN`;
-3. valida o SHA-256 produzido pelo próprio build;
-4. compara com o SHA-256 atualmente publicado;
-5. publica somente quando o arquivo mudou.
-
-O site usa `releases/latest/download/DPage-Setup.exe`, portanto não precisa trocar de URL a cada build.
+O site pode continuar usando `releases/latest/download/DPage-Setup.exe`; a URL permanece estável, mas o arquivo só muda após uma promoção manual aprovada.
